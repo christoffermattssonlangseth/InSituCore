@@ -405,6 +405,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.umap_min_dist_spin.setSingleStep(0.05)
         self.umap_min_dist_spin.setValue(0.1)
         graph_form.addRow("UMAP min_dist", self.umap_min_dist_spin)
+
+        self.cluster_graph_mode_combo = QtWidgets.QComboBox()
+        self.cluster_graph_mode_combo.addItem("Auto (prefer spatial)", "auto")
+        self.cluster_graph_mode_combo.addItem("Expression graph", "expression")
+        self.cluster_graph_mode_combo.addItem("Spatial graph", "spatial")
+        graph_form.addRow("Graph source", self.cluster_graph_mode_combo)
         graph_layout.addLayout(graph_form)
         panel_layout.addWidget(graph_card)
 
@@ -778,6 +784,8 @@ class MainWindow(QtWidgets.QMainWindow):
             str(self.n_pcs_spin.value()),
             "--umap-min-dist",
             str(self.umap_min_dist_spin.value()),
+            "--cluster-graph-mode",
+            str(self.cluster_graph_mode_combo.currentData()),
             "--cluster-method",
             str(self.cluster_method_combo.currentData()),
             "--leiden-resolutions",

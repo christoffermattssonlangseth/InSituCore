@@ -101,6 +101,36 @@ def parse_args() -> argparse.Namespace:
         help="UMAP min_dist parameter.",
     )
     parser.add_argument(
+        "--cluster-graph-mode",
+        choices=["auto", "expression", "spatial"],
+        default="auto",
+        help=(
+            "Graph source for UMAP/Leiden/Louvain: expression neighbors, spatial neighbors, "
+            "or auto (prefer spatial, fallback to expression)."
+        ),
+    )
+    parser.add_argument(
+        "--cluster-spatial-key",
+        default="spatial",
+        help="Spatial coordinates key in adata.obsm for clustering graph (default: spatial).",
+    )
+    parser.add_argument(
+        "--cluster-connectivity-key",
+        default="spatial_connectivities",
+        help=(
+            "Connectivity key in adata.obsp for clustering graph "
+            "(default: spatial_connectivities)."
+        ),
+    )
+    parser.add_argument(
+        "--cluster-sample-key",
+        default="sample_id",
+        help=(
+            "obs column used to avoid cross-sample spatial edges in clustering graph "
+            "(default: sample_id)."
+        ),
+    )
+    parser.add_argument(
         "--leiden-resolutions",
         default="0.1,0.5,1,1.5,2",
         help="Comma-separated Leiden resolutions.",
@@ -426,7 +456,9 @@ def main() -> None:
 
     normalize_for_clustering(ad_clustered, args)
     print("STEP: Running clustering workflow")
-    ad_clustered, cluster_key, cluster_keys = run_clustering(ad_clustered, args, data_out_dir)
+    ad_clustered, cluster_key, cluster_keys, cluster_graph_mode = run_clustering(
+        ad_clustered, args, data_out_dir
+    )
 
     compartment_key = None
     compartment_keys: list[str] = []
@@ -455,6 +487,8 @@ def main() -> None:
         "cluster_key": cluster_key,
         "cluster_keys": cluster_keys,
         "cluster_method": args.cluster_method,
+        "cluster_graph_mode_requested": args.cluster_graph_mode,
+        "cluster_graph_mode_resolved": cluster_graph_mode,
         "mana_representation_mode": args.mana_representation_mode,
         "mana_use_rep": mana_use_rep,
         "compartment_key": compartment_key,

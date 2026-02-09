@@ -287,13 +287,65 @@ def run_clustering(
     ad: sc.AnnData,
     args,
     output_data_dir: Path,
-) -> tuple[sc.AnnData, str, list[str]]:
+) -> tuple[sc.AnnData, str, list[str], str]:
     print("STEP: Running PCA")
     sc.tl.pca(ad)
-    print("STEP: Computing neighbors")
-    sc.pp.neighbors(ad, n_neighbors=args.n_neighbors, n_pcs=args.n_pcs)
+
+    requested_graph_mode = getattr(args, "cluster_graph_mode", "auto")
+    spatial_key = getattr(args, "cluster_spatial_key", "spatial")
+    connectivity_key = getattr(args, "cluster_connectivity_key", "spatial_connectivities")
+    sample_key = getattr(args, "cluster_sample_key", "sample_id")
+
+    if requested_graph_mode not in {"auto", "expression", "spatial"}:
+        raise ValueError(
+            f"Unsupported --cluster-graph-mode '{requested_graph_mode}'. "
+            "Use one of: auto, expression, spatial."
+        )
+
+    neighbors_key = "cluster_expr"
+    resolved_graph_mode = "expression"
+
+    if requested_graph_mode in {"auto", "spatial"}:
+        try:
+            print("STEP: Building spatial neighbors graph for clustering")
+            ensure_spatial_connectivities(
+                ad,
+                spatial_key=spatial_key,
+                connectivity_key=connectivity_key,
+                sample_key=sample_key,
+            )
+            neighbors_key = _neighbors_key_from_connectivity_key(connectivity_key)
+            if neighbors_key not in ad.uns:
+                msg = (
+                    f"Spatial graph metadata ad.uns['{neighbors_key}'] is missing. "
+                    "Rebuild with squidpy spatial_neighbors or use expression graph mode."
+                )
+                if requested_graph_mode == "spatial":
+                    raise ValueError(msg)
+                print(f"STEP: {msg} Falling back to expression neighbors.")
+            else:
+                resolved_graph_mode = "spatial"
+                print(
+                    f"STEP: Using spatial neighbors graph ({neighbors_key}) for UMAP/clustering"
+                )
+        except (ImportError, ValueError, KeyError) as exc:
+            if requested_graph_mode == "spatial":
+                raise
+            print(
+                f"STEP: Spatial graph unavailable ({exc}); falling back to expression neighbors"
+            )
+
+    if resolved_graph_mode == "expression":
+        print("STEP: Computing expression neighbors")
+        sc.pp.neighbors(
+            ad,
+            n_neighbors=args.n_neighbors,
+            n_pcs=args.n_pcs,
+            key_added=neighbors_key,
+        )
+
     print("STEP: Computing UMAP")
-    sc.tl.umap(ad, min_dist=args.umap_min_dist)
+    sc.tl.umap(ad, min_dist=args.umap_min_dist, neighbors_key=neighbors_key)
 
     all_keys: list[str] = []
     method = getattr(args, "cluster_method", "leiden")
@@ -309,7 +361,7 @@ def run_clustering(
             resolution = float(resolution_token)
             key = f"leiden_{resolution_token}"
             print(f"STEP: Running Leiden clustering ({key})")
-            sc.tl.leiden(ad, resolution=resolution, key_added=key)
+            sc.tl.leiden(ad, resolution=resolution, key_added=key, neighbors_key=neighbors_key)
             all_keys.append(key)
     elif method == "louvain":
         resolution_tokens = [
@@ -323,7 +375,12 @@ def run_clustering(
             key = f"louvain_{resolution_token}"
             print(f"STEP: Running Louvain clustering ({key})")
             try:
-                sc.tl.louvain(ad, resolution=resolution, key_added=key)
+                sc.tl.louvain(
+                    ad,
+                    resolution=resolution,
+                    key_added=key,
+                    neighbors_key=neighbors_key,
+                )
             except ImportError as exc:
                 raise ImportError(
                     "Louvain clustering requested, but required dependency is missing. "
@@ -363,7 +420,7 @@ def run_clustering(
     markers = sc.get.rank_genes_groups_df(ad, group=None)
     markers.to_csv(marker_path, index=False)
 
-    return ad, last_key, all_keys
+    return ad, last_key, all_keys, resolved_graph_mode
 
 
 def run_compartment_clustering(
@@ -601,6 +658,86 @@ def ensure_spatial_coordinates(
     return False
 
 
+def _neighbors_key_from_connectivity_key(connectivity_key: str) -> str:
+    if connectivity_key.endswith("_connectivities"):
+        return connectivity_key[: -len("_connectivities")]
+    return connectivity_key
+
+
+def ensure_spatial_connectivities(
+    ad: sc.AnnData,
+    *,
+    spatial_key: str,
+    connectivity_key: str,
+    sample_key: Optional[str] = None,
+) -> str:
+    if not ensure_spatial_coordinates(
+        ad,
+        target_key=spatial_key,
+        preferred_source_key="spatial" if spatial_key != "spatial" else None,
+    ):
+        raise ValueError(
+            f"Spatial coordinates missing for graph construction: ad.obsm['{spatial_key}']."
+        )
+
+    if connectivity_key in ad.obsp:
+        return connectivity_key
+
+    try:
+        import squidpy as sq
+    except ImportError as exc:
+        raise ImportError(
+            "Spatial graph requested, but squidpy is not installed. "
+            "Install squidpy or precompute spatial connectivities."
+        ) from exc
+
+    print("STEP: Building spatial neighbors graph")
+    print("Building spatial neighbors graph with squidpy...")
+    library_key = None
+    if sample_key and sample_key in ad.obs.columns:
+        library_key = sample_key
+    elif "sample_id" in ad.obs.columns:
+        library_key = "sample_id"
+
+    key_added = _neighbors_key_from_connectivity_key(connectivity_key)
+    print(
+        f"Spatial neighbors config: key_added='{key_added}', library_key='{library_key}', delaunay=True"
+    )
+    sq.gr.spatial_neighbors(
+        ad,
+        coord_type="generic",
+        delaunay=True,
+        key_added=key_added,
+        library_key=library_key,
+    )
+
+    generated_connectivity_key = f"{key_added}_connectivities"
+    generated_distance_key = f"{key_added}_distances"
+    if connectivity_key != generated_connectivity_key and generated_connectivity_key in ad.obsp:
+        ad.obsp[connectivity_key] = ad.obsp[generated_connectivity_key]
+        custom_distance_key = connectivity_key.replace("_connectivities", "_distances")
+        if generated_distance_key in ad.obsp and custom_distance_key not in ad.obsp:
+            ad.obsp[custom_distance_key] = ad.obsp[generated_distance_key]
+        print(
+            f"Aliased connectivity key '{generated_connectivity_key}' -> '{connectivity_key}'"
+        )
+
+    try:
+        import cellcharter as cc
+
+        print("STEP: Removing long spatial links (cellcharter)")
+        cc.gr.remove_long_links(ad)
+    except ImportError:
+        pass
+
+    if connectivity_key not in ad.obsp:
+        raise KeyError(
+            f"Expected connectivity key '{connectivity_key}' after squidpy graph build, but not found."
+        )
+
+    return connectivity_key
+
+
 def maybe_run_mana(
     ad: sc.AnnData,
     *,
@@ -620,74 +757,12 @@ def maybe_run_mana(
     if not enabled:
         return
 
-    if spatial_key not in ad.obsm:
-        print("STEP: Resolving spatial coordinates")
-        if not ensure_spatial_coordinates(
-            ad,
-            target_key=spatial_key,
-            preferred_source_key="spatial" if spatial_key != "spatial" else None,
-        ):
-            raise ValueError(
-                f"MANA requested, but ad.obsm['{spatial_key}'] is missing. "
-                "Provide spatial coordinates or choose another --mana-spatial-key."
-            )
-
-    if connectivity_key not in ad.obsp:
-        try:
-            import squidpy as sq
-        except ImportError as exc:
-            raise ImportError(
-                "MANA requested, but spatial connectivity is missing and squidpy is not installed. "
-                "Install squidpy or precompute ad.obsp['spatial_connectivities']."
-            ) from exc
-
-        print("STEP: Building spatial neighbors graph")
-        print("Building spatial neighbors graph with squidpy...")
-        library_key = None
-        if sample_key and sample_key in ad.obs.columns:
-            library_key = sample_key
-        elif "sample_id" in ad.obs.columns:
-            library_key = "sample_id"
-
-        key_added = (
-            connectivity_key.removesuffix("_connectivities")
-            if connectivity_key.endswith("_connectivities")
-            else "spatial"
-        )
-        print(
-            f"Spatial neighbors config: key_added='{key_added}', library_key='{library_key}', delaunay=True"
-        )
-        sq.gr.spatial_neighbors(
-            ad,
-            coord_type="generic",
-            delaunay=True,
-            key_added=key_added,
-            library_key=library_key,
-        )
-
-        generated_connectivity_key = f"{key_added}_connectivities"
-        generated_distance_key = f"{key_added}_distances"
-        if connectivity_key != generated_connectivity_key and generated_connectivity_key in ad.obsp:
-            ad.obsp[connectivity_key] = ad.obsp[generated_connectivity_key]
-            custom_distance_key = connectivity_key.replace("_connectivities", "_distances")
-            if generated_distance_key in ad.obsp and custom_distance_key not in ad.obsp:
-                ad.obsp[custom_distance_key] = ad.obsp[generated_distance_key]
-            print(
-                f"Aliased connectivity key '{generated_connectivity_key}' -> '{connectivity_key}'"
-            )
-
-        try:
-            import cellcharter as cc
-
-            print("STEP: Removing long spatial links (cellcharter)")
-            cc.gr.remove_long_links(ad)
-        except ImportError:
-            pass
-
-        if connectivity_key not in ad.obsp:
-            raise KeyError(
-                f"Expected connectivity key '{connectivity_key}' after squidpy graph build, but not found."
-            )
+    ensure_spatial_connectivities(
+        ad,
+        spatial_key=spatial_key,
+        connectivity_key=connectivity_key,
+        sample_key=sample_key,
+    )
 
     resolved_use_rep = use_rep
     if resolved_use_rep is None and "X_pca" in ad.obsm:
