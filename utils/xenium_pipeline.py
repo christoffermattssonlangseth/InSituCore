@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import matplotlib
 
@@ -45,7 +45,210 @@ def discover_runs(base_dir: Path, run_prefix: str, search_depth: int = 1) -> lis
     return runs
 
 
-def load_and_concat_runs(base_dir: Path, run_prefix: str, search_depth: int = 1) -> sc.AnnData:
+def _split_csv_tokens(raw: str) -> list[str]:
+    tokens = [token.strip() for token in raw.split(",") if token.strip()]
+    if not tokens:
+        raise ValueError("Expected at least one comma-separated token.")
+    return tokens
+
+
+def _coerce_bool_mask(series: pd.Series) -> pd.Series:
+    if series.dtype == bool:
+        return series.fillna(False)
+    if np.issubdtype(series.dtype, np.number):
+        return pd.to_numeric(series, errors="coerce").fillna(0).astype(int).eq(1)
+    return (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .isin(["1", "true", "t", "yes", "y"])
+    )
+
+
+def _list_parquet_files(path: Path) -> list[Path]:
+    if path.is_dir():
+        files = sorted(path.glob("*.parquet"))
+        if not files:
+            raise FileNotFoundError(f"Directory contains no parquet shards: {path}")
+        return files
+    if path.is_file():
+        return [path]
+    raise FileNotFoundError(f"Not a file or directory: {path}")
+
+
+def _get_available_parquet_columns(files: Sequence[Path]) -> set[str]:
+    try:
+        import pyarrow.parquet as pq
+
+        schema = pq.read_schema(str(files[0]))
+        return set(schema.names)
+    except Exception:
+        pass
+
+    try:
+        return set(pd.read_parquet(files[0]).columns)
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not inspect parquet columns. Install pyarrow or fastparquet."
+        ) from exc
+
+
+def _infer_distance_key_from_available(available: set[str]) -> Optional[str]:
+    candidates = [
+        "nucleus_distance",
+        "distance_to_nucleus",
+        "nucleus_distance_um",
+        "distance_to_nucleus_um",
+        "distance_to_nucleus_microns",
+    ]
+    for candidate in candidates:
+        if candidate in available:
+            return candidate
+    return None
+
+
+def _load_parquet_columns(files: Sequence[Path], columns: Sequence[str]) -> pd.DataFrame:
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        tables = [pq.read_table(str(path), columns=list(columns)) for path in files]
+        return pa.concat_tables(tables, promote=True).to_pandas()
+    except Exception:
+        frames = [pd.read_parquet(path, columns=list(columns)) for path in files]
+        return pd.concat(frames, axis=0, ignore_index=True)
+
+
+def _read_cells_metadata(run: Path) -> pd.DataFrame:
+    cells_parquet_path = run / "cells.parquet"
+    cells_csv_path = run / "cells.csv.gz"
+
+    if cells_parquet_path.exists():
+        cells_df = pd.read_parquet(cells_parquet_path)
+    elif cells_csv_path.exists():
+        cells_df = pd.read_csv(cells_csv_path, index_col=0)
+    else:
+        raise FileNotFoundError(
+            f"Missing cells metadata for {run.name}: expected cells.parquet or cells.csv.gz."
+        )
+
+    if "cell_id" in cells_df.columns:
+        cells_df["cell_id"] = cells_df["cell_id"].astype(str)
+        cells_df = cells_df.drop_duplicates("cell_id").set_index("cell_id")
+    else:
+        cells_df.index = cells_df.index.astype(str)
+        cells_df.index.name = "cell_id"
+    return cells_df
+
+
+def _build_adata_from_transcripts(
+    run: Path,
+    *,
+    max_distance_to_nucleus_um: float,
+    nucleus_distance_key: Optional[str],
+    allowed_categories: Sequence[str],
+) -> sc.AnnData:
+    transcripts_path = run / "transcripts.parquet"
+    transcript_files = _list_parquet_files(transcripts_path)
+    available_columns = _get_available_parquet_columns(transcript_files)
+
+    resolved_distance_key = nucleus_distance_key
+    if resolved_distance_key is None or resolved_distance_key not in available_columns:
+        inferred_key = _infer_distance_key_from_available(available_columns)
+        if inferred_key is None:
+            raise KeyError(
+                "Could not find nucleus distance column in transcripts parquet. "
+                "Provide --tx-nucleus-distance-key explicitly."
+            )
+        resolved_distance_key = inferred_key
+
+    required_columns = [
+        "cell_id",
+        "feature_name",
+        "codeword_category",
+        "overlaps_nucleus",
+        resolved_distance_key,
+    ]
+    missing = [column for column in required_columns if column not in available_columns]
+    if missing:
+        raise KeyError(
+            f"Missing required transcript columns in {run.name}: {missing}. "
+            f"Available: {sorted(available_columns)}"
+        )
+
+    tx_df = _load_parquet_columns(transcript_files, required_columns)
+    allowed_set = set(allowed_categories)
+
+    mask = tx_df["codeword_category"].astype(str).isin(allowed_set)
+    mask &= ~tx_df["codeword_category"].astype(str).str.upper().eq("UNASSIGNED")
+    mask &= ~tx_df["cell_id"].astype(str).str.upper().eq("UNASSIGNED")
+    mask &= ~tx_df["feature_name"].astype(str).str.upper().eq("UNASSIGNED")
+
+    overlap = _coerce_bool_mask(tx_df["overlaps_nucleus"])
+    distance_um = pd.to_numeric(tx_df[resolved_distance_key], errors="coerce")
+    near_nucleus = distance_um <= float(max_distance_to_nucleus_um)
+    mask &= overlap | near_nucleus
+
+    tx_df = tx_df.loc[mask, ["cell_id", "feature_name"]].dropna()
+    if tx_df.empty:
+        raise ValueError(
+            f"No transcripts passed nucleus/distance filter in {run.name}. "
+            f"distance_key={resolved_distance_key}, max_distance_um={max_distance_to_nucleus_um}"
+        )
+
+    pair_counts = (
+        tx_df.value_counts(["cell_id", "feature_name"])
+        .rename("count")
+        .reset_index()
+    )
+    pair_counts["cell_id"] = pair_counts["cell_id"].astype(str)
+    pair_counts["feature_name"] = pair_counts["feature_name"].astype(str)
+
+    cell_labels = pd.Index(sorted(pair_counts["cell_id"].unique()), name="cell_id")
+    gene_labels = pd.Index(sorted(pair_counts["feature_name"].unique()), name="gene")
+    row_codes = pd.Categorical(pair_counts["cell_id"], categories=cell_labels).codes
+    col_codes = pd.Categorical(pair_counts["feature_name"], categories=gene_labels).codes
+
+    X = sparse.coo_matrix(
+        (
+            pair_counts["count"].to_numpy(dtype=np.int32),
+            (row_codes, col_codes),
+        ),
+        shape=(len(cell_labels), len(gene_labels)),
+        dtype=np.int32,
+    ).tocsr()
+
+    ad_int = sc.AnnData(X=X)
+    ad_int.obs_names = cell_labels.astype(str)
+    ad_int.var_names = gene_labels.astype(str)
+    ad_int.obs.index.name = "cell_id"
+    ad_int.obs["cell_id"] = ad_int.obs_names
+    ad_int.var["gene"] = ad_int.var_names
+
+    cells_df = _read_cells_metadata(run)
+    obs_index = pd.Index(ad_int.obs_names)
+    for column in cells_df.columns:
+        ad_int.obs[column] = obs_index.map(cells_df[column]).to_numpy()
+
+    for x_key, y_key in [("x_centroid", "y_centroid"), ("x", "y"), ("x_location", "y_location")]:
+        if x_key in ad_int.obs.columns and y_key in ad_int.obs.columns:
+            coords_df = ad_int.obs[[x_key, y_key]].apply(pd.to_numeric, errors="coerce")
+            ad_int.obsm["spatial"] = coords_df.to_numpy()
+            break
+
+    return ad_int
+
+
+def load_and_concat_runs(
+    base_dir: Path,
+    run_prefix: str,
+    search_depth: int = 1,
+    *,
+    count_matrix_mode: str = "cell_feature_matrix",
+    tx_max_distance_to_nucleus_um: float = 5.0,
+    tx_nucleus_distance_key: Optional[str] = "nucleus_distance",
+    tx_allowed_categories: str = "predesigned_gene,custom_gene",
+) -> sc.AnnData:
     print("STEP: Discovering run folders")
     runs = discover_runs(base_dir, run_prefix, search_depth=search_depth)
     if not runs:
@@ -53,26 +256,55 @@ def load_and_concat_runs(base_dir: Path, run_prefix: str, search_depth: int = 1)
             f"No run directories starting with '{run_prefix}' found in {base_dir}"
         )
 
+    if count_matrix_mode not in {"cell_feature_matrix", "nucleus_or_distance"}:
+        raise ValueError(
+            f"Unsupported count_matrix_mode='{count_matrix_mode}'. "
+            "Use 'cell_feature_matrix' or 'nucleus_or_distance'."
+        )
+
+    allowed_categories: list[str] = []
+    if count_matrix_mode == "nucleus_or_distance":
+        allowed_categories = _split_csv_tokens(tx_allowed_categories)
+        print("STEP: Count matrix mode: nucleus OR distance-filtered transcripts")
+        print(
+            "Transcript filter: overlaps_nucleus OR "
+            f"{tx_nucleus_distance_key} <= {tx_max_distance_to_nucleus_um} um"
+        )
+
     ad_list: list[sc.AnnData] = []
     for run in runs:
-        h5_path = run / "cell_feature_matrix.h5"
-        cell_info_path = run / "cells.csv.gz"
-        if not h5_path.exists() or not cell_info_path.exists():
-            print(f"Skipping {run} (missing cell_feature_matrix.h5 or cells.csv.gz)")
-            continue
+        if count_matrix_mode == "cell_feature_matrix":
+            h5_path = run / "cell_feature_matrix.h5"
+            cell_info_path = run / "cells.csv.gz"
+            if not h5_path.exists() or not cell_info_path.exists():
+                print(f"Skipping {run} (missing cell_feature_matrix.h5 or cells.csv.gz)")
+                continue
 
-        print(f"STEP: Reading run data ({run.name})")
-        print(f"Loading run: {run.name}")
-        ad_int = sc.read_10x_h5(str(h5_path))
-        print(f"STEP: Reading metadata ({run.name})")
-        cell_info = pd.read_csv(cell_info_path, index_col=0)
+            print(f"STEP: Reading run data ({run.name})")
+            print(f"Loading run: {run.name}")
+            ad_int = sc.read_10x_h5(str(h5_path))
+            print(f"STEP: Reading metadata ({run.name})")
+            cell_info = pd.read_csv(cell_info_path, index_col=0)
 
-        if len(cell_info) != ad_int.n_obs:
-            raise ValueError(
-                f"Row mismatch in {run.name}: cell_info={len(cell_info)} vs matrix={ad_int.n_obs}"
+            if len(cell_info) != ad_int.n_obs:
+                raise ValueError(
+                    f"Row mismatch in {run.name}: cell_info={len(cell_info)} vs matrix={ad_int.n_obs}"
+                )
+
+            ad_int.obs = cell_info
+        else:
+            transcripts_path = run / "transcripts.parquet"
+            if not transcripts_path.exists():
+                print(f"Skipping {run} (missing transcripts.parquet)")
+                continue
+            print(f"STEP: Building filtered transcript matrix ({run.name})")
+            ad_int = _build_adata_from_transcripts(
+                run,
+                max_distance_to_nucleus_um=tx_max_distance_to_nucleus_um,
+                nucleus_distance_key=tx_nucleus_distance_key,
+                allowed_categories=allowed_categories,
             )
 
-        ad_int.obs = cell_info
         rel_run = run.relative_to(base_dir)
         run_label = "__".join(rel_run.parts)
         ad_int.obs["run"] = run_label
@@ -84,8 +316,13 @@ def load_and_concat_runs(base_dir: Path, run_prefix: str, search_depth: int = 1)
         ad_list.append(ad_int)
 
     if not ad_list:
+        if count_matrix_mode == "cell_feature_matrix":
+            raise RuntimeError(
+                "No valid runs loaded. Ensure each run contains cell_feature_matrix.h5 and cells.csv.gz."
+            )
         raise RuntimeError(
-            "No valid runs loaded. Ensure each run contains cell_feature_matrix.h5 and cells.csv.gz."
+            "No valid runs loaded for nucleus/distance mode. Ensure each run contains "
+            "transcripts.parquet and cells.parquet or cells.csv.gz."
         )
 
     print("STEP: Concatenating data")

@@ -276,7 +276,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sample_id_source_combo.addItem("From run label", "run")
         self.sample_id_source_combo.addItem("From parent folder", "parent")
         form.addRow("Sample ID source", self.sample_id_source_combo)
+
+        self.count_matrix_mode_combo = QtWidgets.QComboBox()
+        self.count_matrix_mode_combo.addItem(
+            "Standard Xenium cell matrix",
+            "cell_feature_matrix",
+        )
+        self.count_matrix_mode_combo.addItem(
+            "Nucleus OR distance-filtered transcripts",
+            "nucleus_or_distance",
+        )
+        form.addRow("Count matrix mode", self.count_matrix_mode_combo)
+
+        self.tx_max_distance_spin = QtWidgets.QDoubleSpinBox()
+        self.tx_max_distance_spin.setDecimals(2)
+        self.tx_max_distance_spin.setRange(0.0, 200.0)
+        self.tx_max_distance_spin.setSingleStep(0.5)
+        self.tx_max_distance_spin.setValue(5.0)
+        form.addRow("Tx max distance (um)", self.tx_max_distance_spin)
+
+        self.tx_nucleus_distance_key_edit = QtWidgets.QLineEdit("nucleus_distance")
+        self.tx_nucleus_distance_key_edit.setPlaceholderText("e.g. nucleus_distance")
+        form.addRow("Tx distance key", self.tx_nucleus_distance_key_edit)
+
+        self.tx_allowed_categories_edit = QtWidgets.QLineEdit("predesigned_gene,custom_gene")
+        self.tx_allowed_categories_edit.setPlaceholderText("comma-separated categories")
+        form.addRow("Tx categories", self.tx_allowed_categories_edit)
         data_layout.addLayout(form)
+        self.count_matrix_mode_combo.currentIndexChanged.connect(self._sync_count_matrix_controls)
+        self._sync_count_matrix_controls()
         layout.addWidget(data_card)
 
         options_box, options_layout = self._create_card(
@@ -474,6 +502,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.kmeans_clusters_edit.setEnabled(kmeans_enabled)
         self.kmeans_random_state_spin.setEnabled(kmeans_enabled)
         self.kmeans_n_init_spin.setEnabled(kmeans_enabled)
+
+    def _sync_count_matrix_controls(self) -> None:
+        transcript_mode = str(self.count_matrix_mode_combo.currentData()) == "nucleus_or_distance"
+        self.tx_max_distance_spin.setEnabled(transcript_mode)
+        self.tx_nucleus_distance_key_edit.setEnabled(transcript_mode)
+        self.tx_allowed_categories_edit.setEnabled(transcript_mode)
 
     def _sync_mana_rep_controls(self) -> None:
         mode = str(self.mana_rep_mode.currentData())
@@ -778,6 +812,8 @@ class MainWindow(QtWidgets.QMainWindow):
             str(self.run_search_depth_combo.currentData()),
             "--sample-id-source",
             str(self.sample_id_source_combo.currentData()),
+            "--count-matrix-mode",
+            str(self.count_matrix_mode_combo.currentData()),
             "--n-neighbors",
             str(self.n_neighbors_spin.value()),
             "--n-pcs",
@@ -799,6 +835,16 @@ class MainWindow(QtWidgets.QMainWindow):
             "--kmeans-n-init",
             str(self.kmeans_n_init_spin.value()),
         ]
+
+        if str(self.count_matrix_mode_combo.currentData()) == "nucleus_or_distance":
+            args += [
+                "--tx-max-distance-um",
+                str(self.tx_max_distance_spin.value()),
+                "--tx-nucleus-distance-key",
+                self.tx_nucleus_distance_key_edit.text().strip() or "nucleus_distance",
+                "--tx-allowed-categories",
+                self.tx_allowed_categories_edit.text().strip() or "predesigned_gene,custom_gene",
+            ]
 
         if self.mana_check.isChecked():
             rep_mode = str(self.mana_rep_mode.currentData())

@@ -74,6 +74,40 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Run directory search depth: 1=direct only, 2=one level below (default: 1).",
     )
+    parser.add_argument(
+        "--count-matrix-mode",
+        choices=["cell_feature_matrix", "nucleus_or_distance"],
+        default="cell_feature_matrix",
+        help=(
+            "Count matrix source: standard Xenium cell_feature_matrix.h5 "
+            "or transcript-level nucleus/distance filtering."
+        ),
+    )
+    parser.add_argument(
+        "--tx-max-distance-um",
+        type=float,
+        default=5.0,
+        help=(
+            "Maximum transcript distance to nucleus in microns for nucleus_or_distance mode "
+            "(default: 5.0)."
+        ),
+    )
+    parser.add_argument(
+        "--tx-nucleus-distance-key",
+        default="nucleus_distance",
+        help=(
+            "Transcript parquet column containing nucleus distance "
+            "(default: nucleus_distance)."
+        ),
+    )
+    parser.add_argument(
+        "--tx-allowed-categories",
+        default="predesigned_gene,custom_gene",
+        help=(
+            "Comma-separated transcript codeword_category values kept when building counts "
+            "(default: predesigned_gene,custom_gene)."
+        ),
+    )
     parser.add_argument("--min-counts", type=int, default=50, help="Filter threshold for min counts.")
     parser.add_argument("--min-genes", type=int, default=15, help="Filter threshold for min genes.")
     parser.add_argument(
@@ -398,6 +432,10 @@ def main() -> None:
         base_dir=base_dir,
         run_prefix=args.run_prefix,
         search_depth=args.run_search_depth,
+        count_matrix_mode=args.count_matrix_mode,
+        tx_max_distance_to_nucleus_um=args.tx_max_distance_um,
+        tx_nucleus_distance_key=args.tx_nucleus_distance_key,
+        tx_allowed_categories=args.tx_allowed_categories,
     )
     print("STEP: Calculating QC metrics")
     sc.pp.calculate_qc_metrics(ad, percent_top=None, log1p=False, inplace=True)
@@ -489,6 +527,10 @@ def main() -> None:
         "cluster_method": args.cluster_method,
         "cluster_graph_mode_requested": args.cluster_graph_mode,
         "cluster_graph_mode_resolved": cluster_graph_mode,
+        "count_matrix_mode": args.count_matrix_mode,
+        "tx_max_distance_um": args.tx_max_distance_um,
+        "tx_nucleus_distance_key": args.tx_nucleus_distance_key,
+        "tx_allowed_categories": args.tx_allowed_categories,
         "mana_representation_mode": args.mana_representation_mode,
         "mana_use_rep": mana_use_rep,
         "compartment_key": compartment_key,
