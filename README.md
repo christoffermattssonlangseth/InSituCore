@@ -209,5 +209,7 @@ python3 run_app.py
 ```
 
 The app keeps a small list of recent runs at `~/.spatial-analysis-for-dummies/recent.json`.
-UI theme lives in `app/theme.qss` (`Paper Atlas`) and primary actions are in the top bar:
+App name: `InSituViewer`.
+Themes live in `app/theme_light.qss` and `app/theme_dark.qss`, with a top-bar dark mode toggle.
+Primary actions are in the top bar:
 `Run`, `Load Outputs`, `Generate UMAP`, `Generate Compartments`.

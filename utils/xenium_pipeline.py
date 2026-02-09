@@ -105,12 +105,10 @@ def build_qc_outputs(ad: sc.AnnData, qc_dir: Path) -> None:
     counts_col = "total_counts"
     ngenes_col = "n_genes_by_counts"
 
-    ad.obs["cell_id"] = ad.obs.index.astype(str)
-
     def pctl(series: pd.Series, p: int) -> float:
         return float(np.nanpercentile(series, p))
 
-    agg_dict: dict[str, tuple[str, object]] = {"n_cells": ("cell_id", "count")}
+    agg_dict: dict[str, tuple[str, object]] = {"n_cells": (run_col, "count")}
     if counts_col in ad.obs.columns:
         agg_dict |= {
             "counts_mean": (counts_col, "mean"),

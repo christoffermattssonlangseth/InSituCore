@@ -21,7 +21,8 @@ except Exception:
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RECENT_PATH = Path.home() / ".spatial-analysis-for-dummies" / "recent.json"
-THEME_PATH = Path(__file__).with_name("theme.qss")
+THEME_LIGHT_PATH = Path(__file__).with_name("theme_light.qss")
+THEME_DARK_PATH = Path(__file__).with_name("theme_dark.qss")
 
 
 @dataclass
@@ -74,7 +75,7 @@ def _save_recent(projects: List[RecentProject]) -> None:
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Spatial Analysis for Dummies")
+        self.setWindowTitle("InSituViewer")
         self.resize(1200, 800)
 
         self.process: Optional[QtCore.QProcess] = None
@@ -87,13 +88,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_out_dir: Optional[Path] = None
         self.current_karospace_html: Optional[Path] = None
         self.recent_projects: List[RecentProject] = _load_recent()
-        self._theme_watcher = QtCore.QFileSystemWatcher(self)
+        self._theme_mode = "light"
 
         self._build_ui()
         self._busy_timer = QtCore.QTimer(self)
         self._busy_timer.setInterval(280)
         self._busy_timer.timeout.connect(self._animate_busy_state)
-        self._setup_theme_watcher()
+        self._apply_theme(self._theme_mode)
         self._populate_recent()
 
     def _build_ui(self) -> None:
@@ -149,9 +150,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         title_col = QtWidgets.QVBoxLayout()
         title_col.setSpacing(1)
-        title = QtWidgets.QLabel("Spatial Analysis")
+        title = QtWidgets.QLabel("InSituViewer")
         title.setObjectName("TopTitle")
-        subtitle = QtWidgets.QLabel("Paper Atlas")
+        subtitle = QtWidgets.QLabel("Local Spatial Analysis")
         subtitle.setObjectName("TopSubtitle")
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
@@ -175,9 +176,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.top_comp_btn.clicked.connect(self._generate_compartment_map)
         layout.addWidget(self.top_comp_btn)
 
-        self.refresh_theme_btn = QtWidgets.QPushButton("Refresh Theme")
-        self.refresh_theme_btn.clicked.connect(self._apply_theme)
-        layout.addWidget(self.refresh_theme_btn)
+        self.theme_toggle_btn = QtWidgets.QPushButton("Dark")
+        self.theme_toggle_btn.setCheckable(True)
+        self.theme_toggle_btn.toggled.connect(self._toggle_theme)
+        layout.addWidget(self.theme_toggle_btn)
 
         self.activity_stage = QtWidgets.QLabel("Idle")
         self.activity_stage.setObjectName("ActivityStage")
@@ -468,24 +470,26 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_activity_stage(stage_text)
                 return
 
-    def _setup_theme_watcher(self) -> None:
-        if not THEME_PATH.exists():
-            return
-        self._theme_watcher.addPath(str(THEME_PATH))
-        self._theme_watcher.fileChanged.connect(self._on_theme_file_changed)
+    def _theme_path(self) -> Path:
+        return THEME_DARK_PATH if self._theme_mode == "dark" else THEME_LIGHT_PATH
 
-    def _on_theme_file_changed(self, changed_path: str) -> None:
-        self._apply_theme()
-        # QFileSystemWatcher can drop changed files; re-add it.
-        if THEME_PATH.exists() and str(THEME_PATH) not in self._theme_watcher.files():
-            self._theme_watcher.addPath(str(THEME_PATH))
+    def _toggle_theme(self, checked: bool) -> None:
+        self._theme_mode = "dark" if checked else "light"
+        self._apply_theme(self._theme_mode)
 
-    def _apply_theme(self) -> None:
+    def _apply_theme(self, mode: Optional[str] = None) -> None:
+        if mode in {"light", "dark"}:
+            self._theme_mode = mode
         app = QtWidgets.QApplication.instance()
-        if app is None or not THEME_PATH.exists():
+        theme_path = self._theme_path()
+        if app is None or not theme_path.exists():
             return
-        app.setStyleSheet(THEME_PATH.read_text())
-        self._log("Theme reloaded.")
+        app.setStyleSheet(theme_path.read_text())
+        self.theme_toggle_btn.blockSignals(True)
+        self.theme_toggle_btn.setChecked(self._theme_mode == "dark")
+        self.theme_toggle_btn.setText("Light" if self._theme_mode == "dark" else "Dark")
+        self.theme_toggle_btn.blockSignals(False)
+        self._log(f"Theme set: {self._theme_mode}")
 
     def _run_pipeline(self) -> None:
         data_dir = self.data_dir_edit.text().strip()
@@ -496,6 +500,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         args = [
             sys.executable,
+            "-u",
             str(ROOT_DIR / "run_xenium_analysis.py"),
             "--data-dir",
             data_dir,
@@ -669,6 +674,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         args = [
             sys.executable,
+            "-u",
             "-m",
             "utils.app_visuals",
             "umap",
@@ -696,6 +702,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         args = [
             sys.executable,
+            "-u",
             "-m",
             "utils.app_visuals",
             "compartments",
@@ -793,8 +800,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
-    if THEME_PATH.exists():
-        app.setStyleSheet(THEME_PATH.read_text())
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
