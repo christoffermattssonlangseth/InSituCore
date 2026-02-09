@@ -103,6 +103,34 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated Leiden resolutions.",
     )
     parser.add_argument(
+        "--cluster-method",
+        choices=["leiden", "louvain", "kmeans"],
+        default="leiden",
+        help="Primary clustering method after graph/UMAP (default: leiden).",
+    )
+    parser.add_argument(
+        "--louvain-resolutions",
+        default="0.5,1.0",
+        help="Comma-separated Louvain resolutions.",
+    )
+    parser.add_argument(
+        "--kmeans-clusters",
+        default="8,12",
+        help="Comma-separated K values for KMeans clustering.",
+    )
+    parser.add_argument(
+        "--kmeans-random-state",
+        type=int,
+        default=0,
+        help="Random seed for KMeans clustering (default: 0).",
+    )
+    parser.add_argument(
+        "--kmeans-n-init",
+        type=int,
+        default=10,
+        help="Number of KMeans initializations per K (default: 10).",
+    )
+    parser.add_argument(
         "--sample-id-split",
         default="__",
         help="Delimiter used to split run name for sample ID extraction.",
@@ -326,7 +354,7 @@ def main() -> None:
     print("STEP: Preprocessing for clustering")
     preprocess_for_clustering(ad_clustered, args)
     print("STEP: Running clustering workflow")
-    ad_clustered, cluster_key = run_clustering(ad_clustered, args, data_out_dir)
+    ad_clustered, cluster_key, cluster_keys = run_clustering(ad_clustered, args, data_out_dir)
 
     compartment_key = None
     compartment_keys: list[str] = []
@@ -353,6 +381,8 @@ def main() -> None:
         compartment_keys = [str(k) for k in compartment_result.get("all_keys", [])]
     cluster_info = {
         "cluster_key": cluster_key,
+        "cluster_keys": cluster_keys,
+        "cluster_method": args.cluster_method,
         "compartment_key": compartment_key,
         "compartment_keys": compartment_keys,
         "mana_compartment_method": args.mana_compartment_method,
@@ -368,7 +398,9 @@ def main() -> None:
 
     print(f"Saved clustered AnnData: {clustered_path}")
     print(f"Marker genes saved: {data_out_dir / 'markers_by_cluster.csv'}")
-    print(f"Leiden key used for marker ranking: {cluster_key}")
+    print(f"Cluster key used for marker ranking: {cluster_key}")
+    if cluster_keys:
+        print(f"Cluster keys: {', '.join(cluster_keys)}")
     if compartment_keys:
         print(f"MANA compartment keys: {', '.join(compartment_keys)}")
 

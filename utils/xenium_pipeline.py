@@ -15,6 +15,7 @@ import pandas as pd
 import scanpy as sc
 import seaborn as sns
 from scipy import sparse
+from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 
 from .mana import aggregate_neighbors_weighted
@@ -285,7 +286,7 @@ def run_clustering(
     ad: sc.AnnData,
     args,
     output_data_dir: Path,
-) -> tuple[sc.AnnData, str]:
+) -> tuple[sc.AnnData, str, list[str]]:
     print("STEP: Running PCA")
     sc.tl.pca(ad)
     print("STEP: Computing neighbors")
@@ -293,17 +294,67 @@ def run_clustering(
     print("STEP: Computing UMAP")
     sc.tl.umap(ad, min_dist=args.umap_min_dist)
 
-    resolution_tokens = [token.strip() for token in args.leiden_resolutions.split(",") if token.strip()]
-    if not resolution_tokens:
-        raise ValueError("No valid leiden resolutions were provided.")
+    all_keys: list[str] = []
+    method = getattr(args, "cluster_method", "leiden")
 
-    last_key = ""
-    for resolution_token in resolution_tokens:
-        resolution = float(resolution_token)
-        key = f"leiden_{resolution_token}"
-        print(f"STEP: Running Leiden clustering ({key})")
-        sc.tl.leiden(ad, resolution=resolution, key_added=key)
-        last_key = key
+    if method == "leiden":
+        resolution_tokens = [
+            token.strip() for token in args.leiden_resolutions.split(",") if token.strip()
+        ]
+        if not resolution_tokens:
+            raise ValueError("No valid Leiden resolutions were provided.")
+
+        for resolution_token in resolution_tokens:
+            resolution = float(resolution_token)
+            key = f"leiden_{resolution_token}"
+            print(f"STEP: Running Leiden clustering ({key})")
+            sc.tl.leiden(ad, resolution=resolution, key_added=key)
+            all_keys.append(key)
+    elif method == "louvain":
+        resolution_tokens = [
+            token.strip() for token in args.louvain_resolutions.split(",") if token.strip()
+        ]
+        if not resolution_tokens:
+            raise ValueError("No valid Louvain resolutions were provided.")
+
+        for resolution_token in resolution_tokens:
+            resolution = float(resolution_token)
+            key = f"louvain_{resolution_token}"
+            print(f"STEP: Running Louvain clustering ({key})")
+            try:
+                sc.tl.louvain(ad, resolution=resolution, key_added=key)
+            except ImportError as exc:
+                raise ImportError(
+                    "Louvain clustering requested, but required dependency is missing. "
+                    "Install python-louvain (package: louvain) and retry."
+                ) from exc
+            all_keys.append(key)
+    elif method == "kmeans":
+        k_tokens = [token.strip() for token in args.kmeans_clusters.split(",") if token.strip()]
+        if not k_tokens:
+            raise ValueError("No valid KMeans K values were provided.")
+        if "X_pca" not in ad.obsm:
+            raise ValueError("KMeans clustering requires PCA coordinates in adata.obsm['X_pca'].")
+
+        x_pca = np.asarray(ad.obsm["X_pca"])
+        for token in k_tokens:
+            k = int(token)
+            key = f"kmeans_k{k}"
+            print(f"STEP: Running KMeans clustering ({key})")
+            km = KMeans(
+                n_clusters=k,
+                random_state=args.kmeans_random_state,
+                n_init=args.kmeans_n_init,
+            )
+            labels = km.fit_predict(x_pca)
+            ad.obs[key] = pd.Categorical(labels.astype(str))
+            all_keys.append(key)
+    else:
+        raise ValueError(f"Unsupported cluster method: {method}")
+
+    if not all_keys:
+        raise ValueError("No clustering outputs were produced.")
+    last_key = all_keys[-1]
 
     marker_path = output_data_dir / "markers_by_cluster.csv"
     print(f"STEP: Ranking marker genes ({last_key})")
@@ -311,7 +362,7 @@ def run_clustering(
     markers = sc.get.rank_genes_groups_df(ad, group=None)
     markers.to_csv(marker_path, index=False)
 
-    return ad, last_key
+    return ad, last_key, all_keys
 
 
 def run_compartment_clustering(

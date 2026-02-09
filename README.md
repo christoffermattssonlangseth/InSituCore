@@ -31,6 +31,7 @@ pip install -r requirements-optional.txt
 ```
 
 - `squidpy` is used when MANA needs to build spatial neighbors from coordinates.
+- `louvain` is required only when using Louvain clustering.
 - Embedded KaroSpace in-app requires `PySide6.QtWebEngineWidgets`.
   Depending on Python and platform, this may come from `PySide6` directly or require:
 
@@ -118,9 +119,13 @@ This will produce `dist/InSituCore-portable.zip`.
 3. Choose sample ID source (`Auto`, `From run label`, `From parent folder`).
 4. Optional: enable `MANA weighted aggregation`.
 5. Optional: enable `Export KaroSpace HTML`.
-6. Click `Run`.
-7. Use top-bar actions: `Load Outputs`, `Generate UMAP`, `Generate Compartments`.
-8. For compartments, choose a compartment key in the `Compartment Map` tab:
+6. Optional: open `Analysis` tab and click `Show advanced parameters` to configure:
+- neighbors / PCs / UMAP min_dist
+- clustering method (`Leiden`, `Louvain`, or `KMeans`)
+- method-specific sweep values (resolutions or K list)
+7. Click `Run`.
+8. Use top-bar actions: `Load Outputs`, `Generate UMAP`, `Generate Compartments`.
+9. For compartments, choose a compartment key in the `Compartment Map` tab:
 - `Auto (primary)` uses the pipeline-selected default.
 - Or choose a specific key like `compartment_gmm_k6` / `compartment_leiden_1.0`.
 
@@ -180,6 +185,9 @@ Useful options:
 - `--run-prefix`
 - `--run-search-depth` (`1` or `2`)
 - `--sample-id-source` (`auto`, `run`, `parent`)
+- `--cluster-method` (`leiden`, `louvain`, `kmeans`)
+- `--n-neighbors`, `--n-pcs`, `--umap-min-dist`
+- `--leiden-resolutions`, `--louvain-resolutions`, `--kmeans-clusters`
 - `--mana-aggregate`
 - `--mana-compartment-method` (`gmm`, `leiden`, `both`; default `gmm`)
 - `--mana-gmm-components` (e.g. `6,10,14`)

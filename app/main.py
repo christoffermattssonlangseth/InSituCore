@@ -140,6 +140,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setObjectName("MainTabs")
         self.tabs.addTab(self._build_run_tab(), "Run")
+        self.tabs.addTab(self._build_analysis_tab(), "Analysis")
         self.tabs.addTab(self._build_qc_tab(), "QC")
         self.tabs.addTab(self._build_spatial_tab(), "Spatial")
         self.tabs.addTab(self._build_umap_tab(), "UMAP")
@@ -342,6 +343,118 @@ class MainWindow(QtWidgets.QMainWindow):
         card_layout.addWidget(self.qc_scroll, stretch=1)
         layout.addWidget(card, stretch=1)
         return widget
+
+    def _build_analysis_tab(self) -> QtWidgets.QWidget:
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(10)
+
+        intro_card, intro_layout = self._create_card(
+            "Analysis Controls",
+            "Hidden-by-default advanced controls for graph/UMAP/clustering strategy.",
+        )
+
+        self.analysis_toggle_btn = QtWidgets.QToolButton()
+        self.analysis_toggle_btn.setText("Show advanced parameters")
+        self.analysis_toggle_btn.setCheckable(True)
+        self.analysis_toggle_btn.setChecked(False)
+        self.analysis_toggle_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.analysis_toggle_btn.setArrowType(QtCore.Qt.RightArrow)
+        intro_layout.addWidget(self.analysis_toggle_btn)
+
+        self.analysis_panel = QtWidgets.QWidget()
+        self.analysis_panel.setVisible(False)
+        panel_layout = QtWidgets.QVBoxLayout(self.analysis_panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(10)
+
+        graph_card, graph_layout = self._create_card(
+            "Graph + UMAP",
+            "Tune neighborhood graph and UMAP embedding before clustering.",
+        )
+        graph_form = QtWidgets.QFormLayout()
+        graph_form.setSpacing(10)
+
+        self.n_neighbors_spin = QtWidgets.QSpinBox()
+        self.n_neighbors_spin.setRange(2, 200)
+        self.n_neighbors_spin.setValue(15)
+        graph_form.addRow("Neighbors (n_neighbors)", self.n_neighbors_spin)
+
+        self.n_pcs_spin = QtWidgets.QSpinBox()
+        self.n_pcs_spin.setRange(2, 200)
+        self.n_pcs_spin.setValue(30)
+        graph_form.addRow("PCs (n_pcs)", self.n_pcs_spin)
+
+        self.umap_min_dist_spin = QtWidgets.QDoubleSpinBox()
+        self.umap_min_dist_spin.setDecimals(3)
+        self.umap_min_dist_spin.setRange(0.0, 1.0)
+        self.umap_min_dist_spin.setSingleStep(0.05)
+        self.umap_min_dist_spin.setValue(0.1)
+        graph_form.addRow("UMAP min_dist", self.umap_min_dist_spin)
+        graph_layout.addLayout(graph_form)
+        panel_layout.addWidget(graph_card)
+
+        cluster_card, cluster_layout = self._create_card(
+            "Clustering",
+            "Choose Leiden, Louvain, or KMeans and define sweep values.",
+        )
+        cluster_form = QtWidgets.QFormLayout()
+        cluster_form.setSpacing(10)
+
+        self.cluster_method_combo = QtWidgets.QComboBox()
+        self.cluster_method_combo.addItem("Leiden", "leiden")
+        self.cluster_method_combo.addItem("Louvain", "louvain")
+        self.cluster_method_combo.addItem("KMeans", "kmeans")
+        cluster_form.addRow("Method", self.cluster_method_combo)
+
+        self.leiden_res_edit = QtWidgets.QLineEdit("0.1,0.5,1,1.5,2")
+        self.leiden_res_edit.setPlaceholderText("e.g. 0.5,1.0,1.5")
+        cluster_form.addRow("Leiden resolutions", self.leiden_res_edit)
+
+        self.louvain_res_edit = QtWidgets.QLineEdit("0.5,1.0")
+        self.louvain_res_edit.setPlaceholderText("e.g. 0.5,1.0")
+        cluster_form.addRow("Louvain resolutions", self.louvain_res_edit)
+
+        self.kmeans_clusters_edit = QtWidgets.QLineEdit("8,12")
+        self.kmeans_clusters_edit.setPlaceholderText("e.g. 8,12,16")
+        cluster_form.addRow("KMeans k values", self.kmeans_clusters_edit)
+
+        self.kmeans_random_state_spin = QtWidgets.QSpinBox()
+        self.kmeans_random_state_spin.setRange(0, 999999)
+        self.kmeans_random_state_spin.setValue(0)
+        cluster_form.addRow("KMeans random_state", self.kmeans_random_state_spin)
+
+        self.kmeans_n_init_spin = QtWidgets.QSpinBox()
+        self.kmeans_n_init_spin.setRange(1, 50)
+        self.kmeans_n_init_spin.setValue(10)
+        cluster_form.addRow("KMeans n_init", self.kmeans_n_init_spin)
+
+        cluster_layout.addLayout(cluster_form)
+        panel_layout.addWidget(cluster_card)
+        panel_layout.addStretch(1)
+
+        intro_layout.addWidget(self.analysis_panel)
+        layout.addWidget(intro_card, stretch=1)
+
+        self.analysis_toggle_btn.toggled.connect(self._toggle_analysis_panel)
+        self.cluster_method_combo.currentIndexChanged.connect(self._sync_cluster_controls)
+        self._sync_cluster_controls()
+        return widget
+
+    def _toggle_analysis_panel(self, checked: bool) -> None:
+        self.analysis_panel.setVisible(checked)
+        self.analysis_toggle_btn.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+        self.analysis_toggle_btn.setText("Hide advanced parameters" if checked else "Show advanced parameters")
+
+    def _sync_cluster_controls(self) -> None:
+        method = str(self.cluster_method_combo.currentData())
+        self.leiden_res_edit.setEnabled(method == "leiden")
+        self.louvain_res_edit.setEnabled(method == "louvain")
+        kmeans_enabled = method == "kmeans"
+        self.kmeans_clusters_edit.setEnabled(kmeans_enabled)
+        self.kmeans_random_state_spin.setEnabled(kmeans_enabled)
+        self.kmeans_n_init_spin.setEnabled(kmeans_enabled)
 
     def _build_spatial_tab(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
@@ -609,6 +722,24 @@ class MainWindow(QtWidgets.QMainWindow):
             str(self.run_search_depth_combo.currentData()),
             "--sample-id-source",
             str(self.sample_id_source_combo.currentData()),
+            "--n-neighbors",
+            str(self.n_neighbors_spin.value()),
+            "--n-pcs",
+            str(self.n_pcs_spin.value()),
+            "--umap-min-dist",
+            str(self.umap_min_dist_spin.value()),
+            "--cluster-method",
+            str(self.cluster_method_combo.currentData()),
+            "--leiden-resolutions",
+            self.leiden_res_edit.text().strip() or "0.1,0.5,1,1.5,2",
+            "--louvain-resolutions",
+            self.louvain_res_edit.text().strip() or "0.5,1.0",
+            "--kmeans-clusters",
+            self.kmeans_clusters_edit.text().strip() or "8,12",
+            "--kmeans-random-state",
+            str(self.kmeans_random_state_spin.value()),
+            "--kmeans-n-init",
+            str(self.kmeans_n_init_spin.value()),
         ]
 
         if self.mana_check.isChecked():

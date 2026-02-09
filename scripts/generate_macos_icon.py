@@ -46,22 +46,24 @@ def _apply_macos_shell(icon: Image.Image) -> Image.Image:
     d = ImageDraw.Draw(sheen)
     d.ellipse(
         (-int(size * 0.1), -int(size * 0.42), int(size * 1.1), int(size * 0.56)),
-        fill=(255, 255, 255, 26),
+        fill=(255, 255, 255, 20),
     )
-    sheen = sheen.filter(ImageFilter.GaussianBlur(radius=size * 0.024))
+    sheen = sheen.filter(ImageFilter.GaussianBlur(radius=size * 0.03))
     shell.alpha_composite(sheen)
 
-    # Outer rim shadow for depth on light backgrounds.
-    rim = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    rd = ImageDraw.Draw(rim)
-    rd.rounded_rectangle(
-        (int(size * 0.014), int(size * 0.014), int(size * 0.986), int(size * 0.986)),
+    # Inner edge vignette only, avoids any outside halo/rectangle artifacts.
+    inner = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    idr = ImageDraw.Draw(inner)
+    idr.rounded_rectangle(
+        (int(size * 0.012), int(size * 0.012), int(size * 0.988), int(size * 0.988)),
         radius=int(size * 0.225),
-        outline=(0, 0, 0, 58),
-        width=max(2, int(size * 0.01)),
+        outline=(0, 0, 0, 32),
+        width=max(2, int(size * 0.006)),
     )
-    rim = rim.filter(ImageFilter.GaussianBlur(radius=size * 0.01))
-    shell.alpha_composite(rim)
+    inner = inner.filter(ImageFilter.GaussianBlur(radius=size * 0.008))
+    inner_masked = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    inner_masked.paste(inner, (0, 0), mask)
+    shell.alpha_composite(inner_masked)
     return shell
 
 
@@ -97,20 +99,28 @@ def _trim_near_black(src: Image.Image, threshold: int = 10) -> Image.Image:
 
 def _icon_from_source(source_path: Path, size: int = 1024) -> Image.Image:
     src = Image.open(source_path).convert("RGBA")
-    src = _trim_near_black(src, threshold=10)
+    src = _trim_near_black(src, threshold=8)
 
-    # Slightly tone down neon intensity for a more native app icon feel.
-    src = ImageEnhance.Color(src).enhance(0.90)
-    src = ImageEnhance.Contrast(src).enhance(1.04)
+    # Tone down neon look toward a softer native app icon profile.
+    src = ImageEnhance.Color(src).enhance(0.78)
+    src = ImageEnhance.Contrast(src).enhance(0.92)
+    src = ImageEnhance.Brightness(src).enhance(0.95)
 
     # Fill the tile directly to avoid adding dark framing bars around the source art.
     src = src.resize((size, size), Image.Resampling.LANCZOS)
+
+    # Very light soft-focus pass to calm high-frequency glow artifacts.
+    blur = src.filter(ImageFilter.GaussianBlur(radius=size * 0.0025))
+    src = Image.blend(src, blur, alpha=0.2)
+
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     canvas.alpha_composite(src, dest=(0, 0))
 
-    # Light unifying tint to soften glow extremes.
-    tint = Image.new("RGBA", (size, size), (22, 35, 58, 18))
+    # Light unifying tint and gentle milk layer for a macOS-like polish.
+    tint = Image.new("RGBA", (size, size), (24, 35, 56, 28))
     canvas.alpha_composite(tint)
+    milk = Image.new("RGBA", (size, size), (255, 255, 255, 12))
+    canvas.alpha_composite(milk)
 
     return _apply_macos_shell(canvas)
 
