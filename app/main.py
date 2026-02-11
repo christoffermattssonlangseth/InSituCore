@@ -82,6 +82,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("InSituCore")
         self.resize(1200, 800)
+        self.setMinimumSize(780, 520)
         if APP_ICON_PATH.exists():
             self.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
 
@@ -99,6 +100,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._manual_theme_override = False
 
         self._build_ui()
+        self.activity_stage.setVisible(self.width() >= 980)
         self._busy_timer = QtCore.QTimer(self)
         self._busy_timer.setInterval(280)
         self._busy_timer.timeout.connect(self._animate_busy_state)
@@ -115,49 +117,85 @@ class MainWindow(QtWidgets.QMainWindow):
 
         root_layout.addWidget(self._build_top_bar())
 
-        layout = QtWidgets.QHBoxLayout()
-        layout.setSpacing(12)
-        root_layout.addLayout(layout, stretch=1)
-
         self.recent_list = QtWidgets.QListWidget()
         self.recent_list.setObjectName("RecentList")
-        self.recent_list.setMaximumWidth(320)
         self.recent_list.itemSelectionChanged.connect(self._on_recent_selected)
 
         recent_box, recent_layout = self._create_card(
             "Recent Projects",
             "Load existing runs without recomputing.",
         )
-        recent_box.setMaximumWidth(340)
+        recent_box.setMinimumWidth(220)
+        recent_box.setMaximumWidth(320)
         recent_layout.addWidget(self.recent_list)
 
         self.load_recent_btn = QtWidgets.QPushButton("Load Outputs")
         self.load_recent_btn.clicked.connect(self._load_selected_recent)
         recent_layout.addWidget(self.load_recent_btn)
 
-        layout.addWidget(recent_box)
+        self.workspace_nav = QtWidgets.QListWidget()
+        self.workspace_nav.setObjectName("WorkspaceNav")
+        self.workspace_nav.setMinimumWidth(170)
+        self.workspace_nav.setMaximumWidth(240)
+        self.workspace_nav.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
 
-        self.tabs = QtWidgets.QTabWidget()
-        self.tabs.setObjectName("MainTabs")
-        self.tabs.addTab(self._build_run_tab(), "Run")
-        self.tabs.addTab(self._build_analysis_tab(), "Analysis")
-        self.tabs.addTab(self._build_qc_tab(), "QC")
-        self.tabs.addTab(self._build_spatial_static_tab(), "Spatial (Static)")
-        self.tabs.addTab(self._build_spatial_tab(), "Spatial (Interactive)")
-        self.tabs.addTab(self._build_umap_tab(), "UMAP")
-        self.tabs.addTab(self._build_compartment_tab(), "Compartments")
+        self.workspace_stack = QtWidgets.QStackedWidget()
+        workspace_pages = [
+            ("Run Pipeline", self._wrap_scroll(self._build_run_tab())),
+            ("Analysis Controls", self._wrap_scroll(self._build_analysis_tab())),
+            ("QC Gallery", self._build_qc_tab()),
+            ("Spatial Static", self._build_spatial_static_tab()),
+            ("Spatial Interactive", self._build_spatial_tab()),
+            ("UMAP", self._build_umap_tab()),
+            ("Compartment Map", self._build_compartment_tab()),
+            ("Gene Expression", self._build_gene_expression_tab()),
+        ]
+        for label, page in workspace_pages:
+            self.workspace_nav.addItem(label)
+            self.workspace_stack.addWidget(page)
+        self.workspace_nav.currentRowChanged.connect(self._on_workspace_nav_changed)
+        self.workspace_nav.setCurrentRow(0)
+
+        workspace_body = QtWidgets.QWidget()
+        workspace_layout = QtWidgets.QHBoxLayout(workspace_body)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(10)
+        workspace_layout.addWidget(self.workspace_nav)
+        workspace_layout.addWidget(self.workspace_stack, stretch=1)
         tabs_card, tabs_layout = self._create_card("Workspace")
-        tabs_layout.addWidget(self.tabs, stretch=1)
-        layout.addWidget(tabs_card, stretch=1)
+        tabs_layout.addWidget(workspace_body, stretch=1)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.setChildrenCollapsible(True)
+        splitter.addWidget(recent_box)
+        splitter.addWidget(tabs_card)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([280, 920])
+        root_layout.addWidget(splitter, stretch=1)
 
         self.setCentralWidget(root)
+
+    def _wrap_scroll(self, content: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setWidget(content)
+        return scroll
+
+    def _on_workspace_nav_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        if index >= self.workspace_stack.count():
+            return
+        self.workspace_stack.setCurrentIndex(index)
 
     def _build_top_bar(self) -> QtWidgets.QWidget:
         top_bar = QtWidgets.QFrame()
         top_bar.setObjectName("TopBar")
         layout = QtWidgets.QHBoxLayout(top_bar)
         layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         title_col = QtWidgets.QVBoxLayout()
         title_col.setSpacing(1)
@@ -179,14 +217,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.top_load_btn.clicked.connect(self._load_outputs_only)
         layout.addWidget(self.top_load_btn)
 
-        self.top_umap_btn = QtWidgets.QPushButton("Generate UMAP")
-        self.top_umap_btn.clicked.connect(self._generate_umap_plot)
-        layout.addWidget(self.top_umap_btn)
-
-        self.top_comp_btn = QtWidgets.QPushButton("Generate Compartments")
-        self.top_comp_btn.clicked.connect(self._generate_compartment_map)
-        layout.addWidget(self.top_comp_btn)
-
         self.theme_toggle_btn = QtWidgets.QPushButton("Dark")
         self.theme_toggle_btn.setCheckable(True)
         self.theme_toggle_btn.toggled.connect(self._toggle_theme)
@@ -194,17 +224,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.activity_stage = QtWidgets.QLabel("Idle")
         self.activity_stage.setObjectName("ActivityStage")
+        self.activity_stage.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self.activity_stage)
 
         self.runner_glyph = QtWidgets.QLabel("o-/")
         self.runner_glyph.setObjectName("RunnerGlyph")
         self.runner_glyph.setText("   ")
+        self.runner_glyph.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self.runner_glyph)
 
         self.status_chip = QtWidgets.QLabel("Ready")
         self.status_chip.setObjectName("StatusChip")
+        self.status_chip.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self.status_chip)
         return top_bar
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        show_stage = self.width() >= 980
+        self.activity_stage.setVisible(show_stage)
 
     def _create_card(
         self,
@@ -393,19 +431,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         intro_card, intro_layout = self._create_card(
             "Analysis Controls",
-            "Hidden-by-default advanced controls for graph/UMAP/clustering strategy.",
+            "Graph, UMAP, and clustering settings.",
         )
 
         self.analysis_toggle_btn = QtWidgets.QToolButton()
-        self.analysis_toggle_btn.setText("Show advanced parameters")
+        self.analysis_toggle_btn.setText("Hide advanced parameters")
         self.analysis_toggle_btn.setCheckable(True)
-        self.analysis_toggle_btn.setChecked(False)
+        self.analysis_toggle_btn.setChecked(True)
         self.analysis_toggle_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
-        self.analysis_toggle_btn.setArrowType(QtCore.Qt.RightArrow)
+        self.analysis_toggle_btn.setArrowType(QtCore.Qt.DownArrow)
         intro_layout.addWidget(self.analysis_toggle_btn)
 
         self.analysis_panel = QtWidgets.QWidget()
-        self.analysis_panel.setVisible(False)
+        self.analysis_panel.setVisible(True)
         panel_layout = QtWidgets.QVBoxLayout(self.analysis_panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(10)
@@ -485,6 +523,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(intro_card, stretch=1)
 
         self.analysis_toggle_btn.toggled.connect(self._toggle_analysis_panel)
+        self._toggle_analysis_panel(True)
         self.cluster_method_combo.currentIndexChanged.connect(self._sync_cluster_controls)
         self._sync_cluster_controls()
         return widget
@@ -540,7 +579,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spatial_static_label = QtWidgets.QLabel("No spatial map found. Click Generate Spatial Map.")
         self.spatial_static_label.setObjectName("PreviewSurface")
         self.spatial_static_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.spatial_static_label.setMinimumHeight(400)
+        self.spatial_static_label.setMinimumHeight(260)
         card_layout.addWidget(self.spatial_static_label, stretch=1)
         layout.addWidget(card, stretch=1)
         return widget
@@ -578,10 +617,23 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(2, 2, 2, 2)
 
         card, card_layout = self._create_card("UMAP", "Top bar action: Generate UMAP.")
+        key_row = QtWidgets.QHBoxLayout()
+        key_label = QtWidgets.QLabel("Cluster key")
+        key_label.setObjectName("CardSubtitle")
+        self.umap_key_combo = QtWidgets.QComboBox()
+        self.umap_key_combo.addItem("Auto (cluster key)", "")
+        self.umap_key_combo.setEnabled(False)
+        self.generate_umap_btn = QtWidgets.QPushButton("Generate UMAP")
+        self.generate_umap_btn.clicked.connect(self._generate_umap_plot)
+        key_row.addWidget(key_label)
+        key_row.addWidget(self.umap_key_combo, stretch=1)
+        key_row.addWidget(self.generate_umap_btn)
+        card_layout.addLayout(key_row)
+
         self.umap_label = QtWidgets.QLabel("No UMAP image loaded.")
         self.umap_label.setObjectName("PreviewSurface")
         self.umap_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.umap_label.setMinimumHeight(400)
+        self.umap_label.setMinimumHeight(260)
         card_layout.addWidget(self.umap_label, stretch=1)
         layout.addWidget(card, stretch=1)
         return widget
@@ -601,14 +653,60 @@ class MainWindow(QtWidgets.QMainWindow):
         self.compartment_key_combo = QtWidgets.QComboBox()
         self.compartment_key_combo.addItem("Auto (primary)", "")
         self.compartment_key_combo.setEnabled(False)
+        self.generate_compartment_btn = QtWidgets.QPushButton("Generate Compartments")
+        self.generate_compartment_btn.clicked.connect(self._generate_compartment_map)
         key_row.addWidget(key_label)
         key_row.addWidget(self.compartment_key_combo, stretch=1)
+        key_row.addWidget(self.generate_compartment_btn)
         card_layout.addLayout(key_row)
         self.compartment_label = QtWidgets.QLabel("No compartment map loaded.")
         self.compartment_label.setObjectName("PreviewSurface")
         self.compartment_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.compartment_label.setMinimumHeight(400)
+        self.compartment_label.setMinimumHeight(260)
         card_layout.addWidget(self.compartment_label, stretch=1)
+        layout.addWidget(card, stretch=1)
+        return widget
+
+    def _build_gene_expression_tab(self) -> QtWidgets.QWidget:
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(2, 2, 2, 2)
+
+        card, card_layout = self._create_card(
+            "Gene Expression Dotplot",
+            "Top markers per cluster/compartment key.",
+        )
+        controls_row = QtWidgets.QHBoxLayout()
+        controls_row.setSpacing(10)
+
+        key_label = QtWidgets.QLabel("Group by")
+        key_label.setObjectName("CardSubtitle")
+        self.gene_expr_key_combo = QtWidgets.QComboBox()
+        self.gene_expr_key_combo.addItem("Auto (cluster key)", "")
+        self.gene_expr_key_combo.setEnabled(False)
+
+        top_n_label = QtWidgets.QLabel("Top genes")
+        top_n_label.setObjectName("CardSubtitle")
+        self.gene_expr_top_n_spin = QtWidgets.QSpinBox()
+        self.gene_expr_top_n_spin.setRange(1, 50)
+        self.gene_expr_top_n_spin.setValue(10)
+
+        self.generate_gene_expr_btn = QtWidgets.QPushButton("Generate Dotplot")
+        self.generate_gene_expr_btn.clicked.connect(self._generate_gene_expression_dotplot)
+
+        controls_row.addWidget(key_label)
+        controls_row.addWidget(self.gene_expr_key_combo, stretch=1)
+        controls_row.addWidget(top_n_label)
+        controls_row.addWidget(self.gene_expr_top_n_spin)
+        controls_row.addWidget(self.generate_gene_expr_btn)
+        card_layout.addLayout(controls_row)
+
+        self.gene_expr_label = QtWidgets.QLabel("No dotplot loaded.")
+        self.gene_expr_label.setObjectName("PreviewSurface")
+        self.gene_expr_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.gene_expr_label.setMinimumHeight(260)
+        card_layout.addWidget(self.gene_expr_label, stretch=1)
+
         layout.addWidget(card, stretch=1)
         return widget
 
@@ -933,12 +1031,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _load_outputs(self, out_dir: Path) -> None:
         self.current_out_dir = out_dir
         self._refresh_spatial_keys(out_dir)
+        self._refresh_umap_keys(out_dir)
         self._refresh_compartment_keys(out_dir)
+        self._refresh_gene_expression_keys(out_dir)
         self._load_qc_images(out_dir)
         self._load_karospace(out_dir)
         self._load_spatial_image(out_dir)
         self._load_umap_image(out_dir)
         self._load_compartment_image(out_dir)
+        self._load_gene_expression_image(out_dir)
 
     def _refresh_spatial_keys(self, out_dir: Path) -> None:
         keys: List[str] = []
@@ -1000,6 +1101,72 @@ class MainWindow(QtWidgets.QMainWindow):
             self.compartment_key_combo.addItem(key, key)
         self.compartment_key_combo.setEnabled(bool(keys))
         self.compartment_key_combo.blockSignals(False)
+
+    def _refresh_umap_keys(self, out_dir: Path) -> None:
+        keys: List[str] = []
+        cluster_info_path = out_dir / "data" / "cluster_info.json"
+        if cluster_info_path.exists():
+            try:
+                payload = json.loads(cluster_info_path.read_text())
+            except json.JSONDecodeError:
+                payload = {}
+
+            ordered_sources = [
+                payload.get("cluster_key"),
+                payload.get("cluster_keys"),
+                payload.get("compartment_key"),
+                payload.get("compartment_keys"),
+            ]
+            for source in ordered_sources:
+                if isinstance(source, list):
+                    candidates = source
+                else:
+                    candidates = [source]
+                for key in candidates:
+                    key_text = str(key or "").strip()
+                    if key_text and key_text not in keys:
+                        keys.append(key_text)
+
+        self.umap_key_combo.blockSignals(True)
+        self.umap_key_combo.clear()
+        self.umap_key_combo.addItem("Auto (cluster key)", "")
+        for key in keys:
+            self.umap_key_combo.addItem(key, key)
+        self.umap_key_combo.setEnabled(bool(keys))
+        self.umap_key_combo.blockSignals(False)
+
+    def _refresh_gene_expression_keys(self, out_dir: Path) -> None:
+        keys: List[str] = []
+        cluster_info_path = out_dir / "data" / "cluster_info.json"
+        if cluster_info_path.exists():
+            try:
+                payload = json.loads(cluster_info_path.read_text())
+            except json.JSONDecodeError:
+                payload = {}
+
+            ordered_sources = [
+                payload.get("cluster_key"),
+                payload.get("cluster_keys"),
+                payload.get("compartment_key"),
+                payload.get("compartment_keys"),
+            ]
+            for source in ordered_sources:
+                if isinstance(source, list):
+                    candidates = source
+                else:
+                    candidates = [source]
+                for key in candidates:
+                    key_text = str(key or "").strip()
+                    if key_text and key_text not in keys:
+                        keys.append(key_text)
+
+        self.gene_expr_key_combo.blockSignals(True)
+        self.gene_expr_key_combo.clear()
+        self.gene_expr_key_combo.addItem("Auto (cluster key)", "")
+        for key in keys:
+            self.gene_expr_key_combo.addItem(key, key)
+        self.gene_expr_key_combo.setEnabled(bool(keys))
+        self.gene_expr_key_combo.blockSignals(False)
 
     def _load_qc_images(self, out_dir: Path) -> None:
         for i in reversed(range(self.qc_layout.count())):
@@ -1088,6 +1255,14 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.compartment_label.setText("No compartment map found. Click Generate Compartment Map.")
 
+    def _load_gene_expression_image(self, out_dir: Path) -> None:
+        plot_path = out_dir / "plots" / "gene_expression_dotplot.png"
+        if plot_path.exists():
+            pixmap = QtGui.QPixmap(str(plot_path))
+            self.gene_expr_label.setPixmap(pixmap.scaledToWidth(900, QtCore.Qt.SmoothTransformation))
+        else:
+            self.gene_expr_label.setText("No gene expression dotplot found. Click Generate Dotplot.")
+
     def _generate_spatial_map(self) -> None:
         if not self.current_out_dir:
             QtWidgets.QMessageBox.warning(self, "Missing output", "Load outputs first.")
@@ -1158,6 +1333,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "--output",
             str(output_path),
         ]
+        selected_key = str(self.umap_key_combo.currentData() or "").strip()
+        if selected_key:
+            args += ["--color", selected_key]
 
         self._run_visual_process(args, output_path, self.umap_label)
 
@@ -1198,6 +1376,46 @@ class MainWindow(QtWidgets.QMainWindow):
             args += ["--color", selected_key]
 
         self._run_visual_process(args, output_path, self.compartment_label)
+
+    def _generate_gene_expression_dotplot(self) -> None:
+        if not self.current_out_dir:
+            QtWidgets.QMessageBox.warning(self, "Missing output", "Load outputs first.")
+            return
+
+        h5ad_path = self.current_out_dir / "data" / "clustered.h5ad"
+        if not h5ad_path.exists():
+            QtWidgets.QMessageBox.warning(self, "Missing file", "clustered.h5ad not found.")
+            return
+
+        output_dir = self.current_out_dir / "plots"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "gene_expression_dotplot.png"
+        if not self._confirm_overwrite(
+            [output_path] if output_path.exists() else [],
+            title="Existing plot found",
+            prompt="Regenerate gene expression dotplot and overwrite existing file?",
+        ):
+            self._log("Gene expression dotplot generation cancelled by user.")
+            return
+
+        args = [
+            sys.executable,
+            "-u",
+            "-m",
+            "utils.app_visuals",
+            "dotplot",
+            "--h5ad",
+            str(h5ad_path),
+            "--output",
+            str(output_path),
+            "--top-n",
+            str(self.gene_expr_top_n_spin.value()),
+        ]
+        selected_key = str(self.gene_expr_key_combo.currentData() or "").strip()
+        if selected_key:
+            args += ["--groupby", selected_key]
+
+        self._run_visual_process(args, output_path, self.gene_expr_label)
 
     def _run_visual_process(
         self,
@@ -1285,6 +1503,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("InSituCore")
+    app.setApplicationDisplayName("InSituCore")
+    app.setOrganizationName("InSituCore")
     if APP_ICON_PATH.exists():
         app.setWindowIcon(QtGui.QIcon(str(APP_ICON_PATH)))
     window = MainWindow()

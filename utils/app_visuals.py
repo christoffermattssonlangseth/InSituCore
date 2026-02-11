@@ -138,6 +138,41 @@ def generate_spatial_map(h5ad_path: Path, output_path: Path, color: Optional[str
     plt.close()
 
 
+def generate_gene_expression_dotplot(
+    h5ad_path: Path,
+    output_path: Path,
+    groupby: Optional[str],
+    top_n: int,
+) -> None:
+    adata = sc.read_h5ad(h5ad_path)
+    cluster_info = _load_cluster_info_path(h5ad_path)
+
+    groupby_key = groupby or _infer_default_color(
+        adata,
+        cluster_info,
+        preferred_key="cluster_keys",
+    )
+    if groupby_key not in adata.obs.columns:
+        raise ValueError(f"Groupby key '{groupby_key}' not found in adata.obs.")
+    if not str(adata.obs[groupby_key].dtype).startswith("category"):
+        adata.obs[groupby_key] = adata.obs[groupby_key].astype("category")
+
+    top_n = max(1, int(top_n))
+    rank_key = f"rank_genes_groups__{groupby_key}"
+    sc.tl.rank_genes_groups(adata, groupby=groupby_key, method="t-test", key_added=rank_key)
+    sc.pl.rank_genes_groups_dotplot(
+        adata,
+        key=rank_key,
+        n_genes=top_n,
+        show=False,
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    plt.close("all")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate plots for the desktop app.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -157,6 +192,12 @@ def build_parser() -> argparse.ArgumentParser:
     spatial.add_argument("--output", required=True, help="Output PNG path")
     spatial.add_argument("--color", default=None, help="Color key in adata.obs")
 
+    dotplot = sub.add_parser("dotplot", help="Generate gene-expression dotplot")
+    dotplot.add_argument("--h5ad", required=True, help="Path to clustered.h5ad")
+    dotplot.add_argument("--output", required=True, help="Output PNG path")
+    dotplot.add_argument("--groupby", default=None, help="Groupby key in adata.obs")
+    dotplot.add_argument("--top-n", type=int, default=10, help="Top genes per group (default: 10)")
+
     return parser
 
 
@@ -173,6 +214,8 @@ def main() -> None:
         generate_compartment_map(h5ad_path, output_path, args.color)
     elif args.command == "spatial":
         generate_spatial_map(h5ad_path, output_path, args.color)
+    elif args.command == "dotplot":
+        generate_gene_expression_dotplot(h5ad_path, output_path, args.groupby, args.top_n)
 
 
 if __name__ == "__main__":
